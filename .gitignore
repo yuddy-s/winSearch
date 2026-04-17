@@ -1,9 +1,11 @@
 node_modules/
+.vite-cache/
 dist/
 coverage/
 
 # Rust / Tauri build output
 src-tauri/target/
+src-tauri/gen/
 
 # Environment-specific overrides
 .env.local

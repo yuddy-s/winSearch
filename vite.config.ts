@@ -4,6 +4,10 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  cacheDir: ".vite-cache",
+  build: {
+    emptyOutDir: false,
+  },
   server: {
     host: "127.0.0.1",
     port: 1420,

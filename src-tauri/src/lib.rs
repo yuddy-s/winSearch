@@ -1,3 +1,6 @@
+mod db;
+
+use db::{AppIndexStore, AppRecord, AppRecordUpsert, IndexStatus};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -66,6 +69,42 @@ fn get_hotkey_status(state: State<Mutex<HotkeyState>>) -> Result<HotkeyStatus, S
   })
 }
 
+#[tauri::command]
+fn get_index_status(store: State<AppIndexStore>) -> Result<IndexStatus, String> {
+  store.get_status()
+}
+
+#[tauri::command]
+fn upsert_index_record(
+  store: State<AppIndexStore>,
+  record: AppRecordUpsert,
+) -> Result<AppRecord, String> {
+  store.upsert_app_record(record)
+}
+
+#[tauri::command]
+fn list_index_records(store: State<AppIndexStore>, limit: Option<u32>) -> Result<Vec<AppRecord>, String> {
+  let bounded_limit = limit.unwrap_or(25).clamp(1, 200);
+  store.list_apps(bounded_limit)
+}
+
+#[tauri::command]
+fn set_index_source_version(
+  store: State<AppIndexStore>,
+  source: String,
+  collector_version: String,
+) -> Result<(), String> {
+  store.set_source_version(&source, &collector_version)
+}
+
+#[tauri::command]
+fn get_index_source_version(
+  store: State<AppIndexStore>,
+  source: String,
+) -> Result<Option<String>, String> {
+  store.get_source_version(&source)
+}
+
 fn toggle_overlay_visibility(app: &AppHandle, force_visible: bool) -> Result<(), String> {
   let window = app
     .get_webview_window("main")
@@ -102,7 +141,7 @@ fn register_overlay_hotkey(app: &AppHandle, state: &State<Mutex<HotkeyState>>) -
     .map_err(|_| "Hotkey state lock is poisoned".to_string())?;
 
   for (index, candidate) in HOTKEY_CANDIDATES.iter().enumerate() {
-    match app.global_shortcut().on_shortcut(candidate, |app, _shortcut, event| {
+    match app.global_shortcut().on_shortcut(*candidate, |app, _shortcut, event| {
       if event.state == ShortcutState::Pressed {
         if let Err(error) = toggle_overlay_visibility(app, false) {
           tracing::error!(%error, "Failed to toggle overlay visibility from hotkey");
@@ -157,6 +196,29 @@ pub fn run() {
     .manage(Mutex::new(HotkeyState::default()))
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
     .setup(|app| {
+      let index_data_dir = app.path().app_local_data_dir().map_err(|error| {
+        std::io::Error::new(
+          std::io::ErrorKind::Other,
+          format!("Failed to resolve app-local data directory: {error}"),
+        )
+      })?;
+
+      let index_store = AppIndexStore::initialize(&index_data_dir)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+
+      let index_status = index_store
+        .get_status()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+
+      tracing::info!(
+        db_path = %index_status.db_path,
+        schema_version = index_status.schema_version,
+        app_count = index_status.app_count,
+        "SQLite app index initialized"
+      );
+
+      app.manage(index_store);
+
       let hotkey_state = app.state::<Mutex<HotkeyState>>();
       let registration_result = register_overlay_hotkey(&app.handle().clone(), &hotkey_state);
 
@@ -172,7 +234,17 @@ pub fn run() {
 
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![ping, hide_overlay, show_overlay, get_hotkey_status])
+    .invoke_handler(tauri::generate_handler![
+      ping,
+      hide_overlay,
+      show_overlay,
+      get_hotkey_status,
+      get_index_status,
+      upsert_index_record,
+      list_index_records,
+      set_index_source_version,
+      get_index_source_version
+    ])
     .run(tauri::generate_context!())
     .expect("error while running WinSearch application");
 }
