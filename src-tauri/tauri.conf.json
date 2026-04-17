@@ -13,13 +13,18 @@
     "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
         "title": "WinSearch",
-        "width": 960,
-        "height": 620,
-        "resizable": true,
+        "width": 900,
+        "height": 540,
+        "resizable": false,
         "fullscreen": false,
-        "decorations": true,
-        "visible": true
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false
       }
     ],
     "security": {

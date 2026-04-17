@@ -1,8 +1,12 @@
 :root {
   color-scheme: dark;
   font-family: "Segoe UI", "SF Pro Text", sans-serif;
-  background-color: #070a11;
-  color: #f6f8ff;
+  --bg-overlay: rgba(4, 8, 18, 0.52);
+  --panel-bg: rgba(10, 15, 25, 0.93);
+  --panel-border: rgba(162, 189, 245, 0.22);
+  --text-main: #eef3ff;
+  --text-muted: #a8b6d6;
+  --accent: #6aa9ff;
 }
 
 * {
@@ -12,79 +16,145 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 15% -10%, rgba(76, 173, 255, 0.2), transparent 55%),
-    radial-gradient(circle at 80% 120%, rgba(44, 96, 255, 0.22), transparent 45%),
-    #070a11;
+  overflow: hidden;
 }
 
-.shell {
+.overlay {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 84px 20px 20px;
+  background:
+    radial-gradient(circle at 30% -20%, rgba(114, 192, 255, 0.18), transparent 55%),
+    radial-gradient(circle at 75% 120%, rgba(66, 91, 255, 0.22), transparent 50%),
+    var(--bg-overlay);
 }
 
-.card {
-  width: min(720px, 100%);
-  border: 1px solid rgba(150, 170, 220, 0.2);
-  border-radius: 20px;
-  padding: 32px;
-  background: rgba(11, 15, 26, 0.82);
+.palette {
+  width: min(760px, 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: 22px;
+  padding: 20px;
+  background: var(--panel-bg);
   backdrop-filter: blur(16px);
   box-shadow:
-    0 24px 80px rgba(0, 0, 0, 0.45),
+    0 22px 64px rgba(0, 0, 0, 0.48),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
-.eyebrow {
-  margin: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 12px;
-  color: #8ab6ff;
+.palette-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 h1 {
-  margin: 10px 0 14px;
-  font-size: clamp(36px, 7vw, 52px);
-  line-height: 1;
-}
-
-p {
   margin: 0;
-  color: #cdd6f3;
-  line-height: 1.5;
+  font-size: clamp(26px, 5vw, 34px);
+  line-height: 1;
+  color: var(--text-main);
 }
 
-.status-row {
-  margin-top: 18px;
+.hotkey-badge {
+  padding: 6px 10px;
+  border: 1px solid rgba(146, 174, 236, 0.25);
+  border-radius: 999px;
+  color: #d3e3ff;
+  font-size: 12px;
+}
+
+.search-input-wrap {
   display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  align-items: center;
+  margin-bottom: 14px;
 }
 
-.status-row span {
-  border: 1px solid rgba(152, 176, 227, 0.24);
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 13px;
-  color: #d6ddf8;
-}
-
-button {
-  appearance: none;
-  border: 0;
-  border-radius: 999px;
-  padding: 8px 16px;
-  background: linear-gradient(135deg, #4f97ff, #3f75f5);
-  color: #f8fbff;
+input {
+  width: 100%;
+  border: 1px solid rgba(159, 186, 242, 0.24);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: rgba(8, 13, 22, 0.88);
+  color: var(--text-main);
   font: inherit;
-  font-weight: 600;
-  cursor: pointer;
+  font-size: 18px;
+  outline: none;
 }
 
-button:hover {
-  filter: brightness(1.05);
+input:focus {
+  border-color: rgba(106, 169, 255, 0.75);
+  box-shadow: 0 0 0 3px rgba(95, 154, 255, 0.2);
+}
+
+.results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid rgba(159, 186, 242, 0.18);
+  border-radius: 14px;
+  overflow: hidden;
+  max-height: 330px;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  color: var(--text-main);
+  background: rgba(10, 16, 28, 0.92);
+  border-top: 1px solid rgba(149, 176, 236, 0.09);
+}
+
+.result-row:first-child {
+  border-top: 0;
+}
+
+.result-row small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.result-row.is-selected {
+  background: linear-gradient(90deg, rgba(75, 133, 249, 0.32), rgba(36, 87, 217, 0.25));
+  border-top-color: rgba(120, 167, 250, 0.3);
+}
+
+.empty-state {
+  padding: 16px;
+  color: var(--text-muted);
+}
+
+.footer-row {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.footer-row span {
+  border: 1px solid rgba(152, 176, 227, 0.18);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.notice {
+  margin: 10px 0 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
 }

@@ -2,7 +2,7 @@
 
 Spotlight-style launcher for Windows built with **Tauri 2 + React + TypeScript**.
 
-This repository is currently scoped to **Phase 1 (Repository Bootstrap and Engineering Foundations)** from `winsearch-spotlight-plan.md`.
+This repository is currently scoped through **Phase 2 (Overlay Window and Global Hotkey Core)** from `winsearch-spotlight-plan.md`.
 
 ## Quick Start
 
@@ -35,6 +35,18 @@ npm run setup
 - `src-tauri/capabilities/` - Tauri capability permissions
 - `scripts/` - local setup helpers
 - `docs/` - implementation and engineering conventions
+
+## Current Milestone Status
+
+- Phase 1 complete: repository bootstrap and engineering foundations
+- Phase 2 complete: hidden overlay window, global hotkey registration, and focus-safe open/close loop
+
+## Prerequisites
+
+- Node.js and npm
+- Rust toolchain (`rustup`, `cargo`, `rustc`) on PATH
+
+Without Rust installed, `npm run tauri:dev` cannot launch the desktop app.
 
 ## Environment Strategy
 
