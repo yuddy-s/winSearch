@@ -6,7 +6,7 @@ authors = ["winsearch contributors"]
 license = "MIT"
 repository = "https://github.com/yuddy-s/winSearch"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.88"
 
 [lib]
 name = "winsearch_lib"
