@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# Environment-specific overrides
+.env.local
+.env.*.local
+
+# Logs and temp files
+*.log
+*.tmp

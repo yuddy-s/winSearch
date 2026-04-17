@@ -1,0 +1,27 @@
+[package]
+name = "winsearch"
+version = "0.1.0"
+description = "Spotlight-style launcher for Windows"
+authors = ["winsearch contributors"]
+license = "MIT"
+repository = "https://github.com/yuddy-s/winSearch"
+edition = "2021"
+rust-version = "1.86"
+
+[lib]
+name = "winsearch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.0", features = [] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
