@@ -1,5 +1,7 @@
+mod collectors;
 mod db;
 
+use collectors::{start_menu, CollectionReport};
 use db::{AppIndexStore, AppRecord, AppRecordUpsert, IndexStatus};
 use serde::Serialize;
 use std::sync::Mutex;
@@ -103,6 +105,11 @@ fn get_index_source_version(
   source: String,
 ) -> Result<Option<String>, String> {
   store.get_source_version(&source)
+}
+
+#[tauri::command]
+fn collect_start_menu_apps(store: State<AppIndexStore>) -> Result<CollectionReport, String> {
+  start_menu::collect(store.inner())
 }
 
 fn toggle_overlay_visibility(app: &AppHandle, force_visible: bool) -> Result<(), String> {
@@ -217,6 +224,22 @@ pub fn run() {
         "SQLite app index initialized"
       );
 
+      match start_menu::collect(&index_store) {
+        Ok(report) => {
+          tracing::info!(
+            source = report.source.as_str(),
+            scanned_entries = report.scanned_entries,
+            indexed_entries = report.indexed_entries,
+            skipped_entries = report.skipped_entries,
+            error_count = report.errors.len(),
+            "Start-menu collector finished initial index pass"
+          );
+        }
+        Err(error) => {
+          tracing::error!(%error, "Start-menu collector failed during initial index pass");
+        }
+      }
+
       app.manage(index_store);
 
       let hotkey_state = app.state::<Mutex<HotkeyState>>();
@@ -243,7 +266,8 @@ pub fn run() {
       upsert_index_record,
       list_index_records,
       set_index_source_version,
-      get_index_source_version
+      get_index_source_version,
+      collect_start_menu_apps
     ])
     .run(tauri::generate_context!())
     .expect("error while running WinSearch application");

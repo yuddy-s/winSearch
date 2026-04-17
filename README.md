@@ -2,7 +2,7 @@
 
 Spotlight-style launcher for Windows built with **Tauri 2 + React + TypeScript**.
 
-This repository is currently scoped through **Phase 3 foundation (Data Model and Local Index Foundation)** from `winsearch-spotlight-plan.md`.
+This repository is currently scoped through **Phase 4 kickoff (Start Menu collector)** from `winsearch-spotlight-plan.md`.
 
 ## Quick Start
 
@@ -33,6 +33,7 @@ npm run setup
 - `src/` - React UI shell, runtime config, and frontend logging
 - `src-tauri/src/` - Rust application entrypoint and Tauri commands
 - `src-tauri/src/db/` - SQLite index store and migration runner
+- `src-tauri/src/collectors/` - app source collectors (Start Menu currently)
 - `src-tauri/migrations/` - SQL migration files for local index schema
 - `src-tauri/capabilities/` - Tauri capability permissions
 - `scripts/` - local setup helpers
@@ -43,6 +44,7 @@ npm run setup
 - Phase 1 complete: repository bootstrap and engineering foundations
 - Phase 2 complete: hidden overlay window, global hotkey registration, and focus-safe open/close loop
 - Phase 3 foundation complete: SQLite schema, migration path, and initial index store APIs
+- Phase 4 started: Start Menu collector implemented and wired to index
 
 ## Prerequisites
 
