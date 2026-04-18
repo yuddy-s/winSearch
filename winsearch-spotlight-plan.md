@@ -6,13 +6,25 @@ Scope: End-to-end plan from idea to release and post-launch
 
 ## Product Goal
 
-Build a fast, beautiful, keyboard-first Windows launcher that feels like macOS Spotlight, starting with an apps-first MVP and expanding to file and content search in later versions.
+Build a fast, beautiful, keyboard-first Windows launcher that feels like macOS Spotlight, with **file discovery as the primary use case**: instant file-name search, content-aware search, and one-keystroke open/reveal actions.
+
+## Scope Lock (Must-Have)
+
+The following capabilities are mandatory for V1 and are no longer optional:
+
+- Fast file-name search over user-selected indexed folders.
+- File content search (for supported text-based formats).
+- Open selected file directly.
+- Reveal selected file location in Windows File Explorer.
+
+These are now release-gating requirements.
 
 ## North-Star Targets (V1)
 
 - Hotkey to open overlay: perceived instant, <= 700ms cold open.
 - Query-to-results response: <= 50ms warm path for typical inputs.
-- One-keystroke launch flow: type -> Enter.
+- Content-search response target: <= 150ms warm path for typical queries on indexed files.
+- One-keystroke action flow: type -> Enter to open, plus quick reveal-in-Explorer action.
 - Idle memory target: <= 150MB.
 - Visual quality: polished centered palette with smooth motion and clear hierarchy.
 
@@ -26,10 +38,11 @@ Build a fast, beautiful, keyboard-first Windows launcher that feels like macOS S
 
 ## System Architecture (Target)
 
-- Collector layer: Start Menu, registry-installed programs, UWP package apps.
-- Index layer: normalize records and persist to SQLite.
-- Search layer: fuzzy matching + weighted ranking + usage learning.
-- Action layer: launch selected target and log usage signal.
+- Collector layer: file system crawler (selected folders), plus optional app sources (Start Menu/registry/UWP).
+- Index layer: normalize file + app records and persist to SQLite.
+- Content layer: text extraction pipeline for searchable file contents.
+- Search layer: fuzzy file-name matching + content matching + weighted ranking.
+- Action layer: open target and reveal file in Explorer, with usage logging.
 - UI layer: Spotlight-like overlay with keyboard-first navigation.
 
 ---
@@ -40,7 +53,7 @@ Build a fast, beautiful, keyboard-first Windows launcher that feels like macOS S
 Lock scope, behavior, and quality bar before coding.
 
 ### Work
-- Confirm V1 boundary: apps-first MVP.
+- Confirm V1 boundary: file-first MVP.
 - Define interaction contract: open, type, navigate, launch, close.
 - Define acceptance KPIs (latency, memory, relevance).
 - Define non-goals for V1 to prevent scope creep.
@@ -109,10 +122,13 @@ Make the app feel alive immediately: hotkey opens a focused centered palette.
 ## Phase 3 - Data Model and Local Index Foundation
 
 ### Objective
-Define a durable app record schema and query-ready storage layer.
+Define durable file + app schemas and a query-ready storage layer.
 
 ### Work
-- Create normalized app schema:
+- Create normalized file schema:
+  - `id`, `name`, `extension`, `normalized_path`, `parent_path`, `size_bytes`, `modified_at`.
+- Create content-index schema for extracted text and lookup metadata.
+- Keep app schema support for launcher parity:
   - `id`, `name`, `aliases`, `source`, `launch_target`, `icon_key`, `last_seen_at`.
 - Add SQLite migrations and repository/store APIs.
 - Implement upsert strategy to avoid duplicates.
@@ -133,12 +149,14 @@ Define a durable app record schema and query-ready storage layer.
 
 ---
 
-## Phase 4 - App Collectors (Start Menu, Registry, UWP)
+## Phase 4 - File and App Collectors
 
 ### Objective
-Populate the index with real apps on a broad set of Windows setups.
+Populate the index with real files first, then app sources.
 
 ### Work
+- Implement file collector for user-selected folders with recursive crawl and ignore rules.
+- Implement incremental file refresh (change detection by path + mtime/size).
 - Implement Start Menu shortcut collector.
 - Implement installed program collector from registry.
 - Implement UWP package app collector.
@@ -156,27 +174,28 @@ Populate the index with real apps on a broad set of Windows setups.
 - Source-specific normalization and confidence weighting.
 
 ### Exit Criteria
-- On representative machines, index coverage includes expected common apps.
+- On representative machines, indexed file coverage is stable and app collectors remain additive.
 
 ---
 
 ## Phase 5 - Search Engine and Ranking
 
 ### Objective
-Return the right app quickly with minimal typing.
+Return the right file quickly and support reliable content hits.
 
 ### Work
 - Implement tokenizer and normalized search terms.
-- Implement ranking formula:
+- Implement file ranking formula:
   - prefix match
   - token match
   - fuzzy/subsequence match
+  - content-hit boost
   - usage boost (recency + frequency)
 - Add deterministic tie-breakers.
 - Add result limits and lightweight query caching.
 
 ### Deliverables
-- Query API returning ranked results in stable structure.
+- Query API returning ranked file/app results in stable structure.
 - Ranking test suite with representative cases.
 
 ### Risks
@@ -224,10 +243,13 @@ Deliver a polished experience that feels intentional, not generic.
 Complete the core loop and prepare for user customization.
 
 ### Work
-- Implement launch action runner for each target type.
+- Implement open-file action runner.
+- Implement reveal-in-Explorer action runner.
+- Keep app launch action support where relevant.
 - Add post-launch usage logging for ranking feedback.
 - Add basic settings surface:
   - hotkey override
+  - indexed folder management
   - launch at startup toggle
   - clear usage history
 - Add safe error feedback for broken launch targets.
@@ -243,7 +265,7 @@ Complete the core loop and prepare for user customization.
 - Defensive checks and stale-entry cleanup on failures.
 
 ### Exit Criteria
-- Launch, rerank, and preference persistence work end-to-end.
+- Open, reveal, rerank, and preference persistence work end-to-end.
 
 ---
 
@@ -283,7 +305,7 @@ Prevent regressions and lock in confidence for release.
 - Unit tests: tokenizer, scoring, merge/upsert logic.
 - Integration tests: collector -> index -> query pipeline.
 - UI tests: keyboard flow and selection behavior.
-- End-to-end smoke tests: open -> search -> launch.
+- End-to-end smoke tests: open -> search -> open file/reveal location.
 - Error-path tests: source failure, stale target, empty index.
 
 ### Deliverables
@@ -338,11 +360,9 @@ Improve relevance and stability based on real use.
 ## Phase 12 - V2 Expansion (Files and Rich Actions)
 
 ### Objective
-Expand from app launcher to broader Spotlight equivalent.
+Expand from file-first launcher to broader Spotlight equivalent.
 
 ### V2 Work Candidates
-- User-selected folder/file indexing.
-- Fast file open and folder reveal actions.
 - Search categories and filters.
 - Calculator/math and quick web fallback.
 - Optional plugin/action framework.
@@ -357,8 +377,8 @@ Expand from app launcher to broader Spotlight equivalent.
 ## Cross-Phase Milestones
 
 - Milestone A: Core shell works (Phases 1-2 complete).
-- Milestone B: Real searchable app index (Phases 3-5 complete).
-- Milestone C: Polished UX + reliable launch loop (Phases 6-7 complete).
+- Milestone B: Real searchable file index with content hits (Phases 3-5 complete).
+- Milestone C: Polished UX + reliable open/reveal loop (Phases 6-7 complete).
 - Milestone D: Release candidate quality (Phases 8-10 complete).
 - Milestone E: Growth and expansion (Phases 11-12 active).
 
@@ -368,8 +388,8 @@ To start implementation immediately with high momentum:
 
 1. Phase 1 bootstrap.
 2. Phase 2 hotkey + overlay shell.
-3. Phase 3 schema + SQLite store.
-4. Phase 4 Start Menu collector first (then registry/UWP).
-5. Phase 5 minimal ranking pass.
+3. Phase 3 file-first schema + SQLite store.
+4. Phase 4 file collector first (then Start Menu/registry/UWP).
+5. Phase 5 file-name + content ranking baseline.
 
 This gets to a usable MVP fastest while keeping room for polish and expansion.

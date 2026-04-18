@@ -4,6 +4,17 @@ Spotlight-style launcher for Windows built with **Tauri 2 + React + TypeScript**
 
 This repository is currently scoped through **Phase 4 kickoff (Start Menu collector)** from `winsearch-spotlight-plan.md`.
 
+## Product Priority (Locked)
+
+The most important WinSearch outcome is now explicitly file-first:
+
+- very fast file-name search
+- file content search (supported text-based files)
+- open file directly
+- reveal file location in Windows File Explorer
+
+These are treated as must-have release requirements.
+
 ## Quick Start
 
 ```bash
