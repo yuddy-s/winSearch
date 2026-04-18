@@ -6,6 +6,6 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "WinSearch" })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Search apps")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search files")).toBeInTheDocument();
   });
 });

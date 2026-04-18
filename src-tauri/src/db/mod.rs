@@ -1,14 +1,16 @@
 use rusqlite::{params, types::Type, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::{
+  collections::HashSet,
   fs,
   path::{Path, PathBuf},
   time::{SystemTime, UNIX_EPOCH},
 };
 
 const DB_FILE_NAME: &str = "winsearch.db";
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 const MIGRATION_0001_INITIAL: &str = include_str!("../../migrations/0001_initial.sql");
+const MIGRATION_0002_FILE_RECORDS: &str = include_str!("../../migrations/0002_file_records.sql");
 
 #[derive(Clone)]
 pub struct AppIndexStore {
@@ -21,6 +23,7 @@ pub struct IndexStatus {
   pub db_path: String,
   pub schema_version: i64,
   pub app_count: i64,
+  pub file_count: i64,
   pub source_version_count: i64,
 }
 
@@ -52,6 +55,39 @@ pub struct AppRecordUpsert {
   pub icon_key: Option<String>,
   pub merge_key: String,
   pub last_seen_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecord {
+  pub id: String,
+  pub name: String,
+  pub extension: Option<String>,
+  pub normalized_name: String,
+  pub normalized_path: String,
+  pub parent_path: String,
+  pub size_bytes: i64,
+  pub modified_at: i64,
+  pub content_indexed: bool,
+  pub last_seen_at: i64,
+  pub created_at: i64,
+  pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecordUpsert {
+  pub path: String,
+  pub size_bytes: i64,
+  pub modified_at: i64,
+  pub content_text: Option<String>,
+  pub last_seen_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileRecordSnapshot {
+  pub size_bytes: i64,
+  pub modified_at: i64,
 }
 
 impl AppIndexStore {
@@ -92,6 +128,10 @@ impl AppIndexStore {
       .query_row("SELECT COUNT(*) FROM app_records;", [], |row| row.get(0))
       .map_err(|error| format!("Failed to count app records: {error}"))?;
 
+    let file_count: i64 = connection
+      .query_row("SELECT COUNT(*) FROM file_records;", [], |row| row.get(0))
+      .map_err(|error| format!("Failed to count file records: {error}"))?;
+
     let source_version_count: i64 = connection
       .query_row("SELECT COUNT(*) FROM source_versions;", [], |row| row.get(0))
       .map_err(|error| format!("Failed to count source versions: {error}"))?;
@@ -100,6 +140,7 @@ impl AppIndexStore {
       db_path: self.db_path.to_string_lossy().into_owned(),
       schema_version,
       app_count,
+      file_count,
       source_version_count,
     })
   }
@@ -260,6 +301,277 @@ impl AppIndexStore {
       .map_err(|error| format!("Failed to parse app records: {error}"))
   }
 
+  pub fn upsert_file_record(&self, input: FileRecordUpsert) -> Result<FileRecord, String> {
+    let mut connection = self.open_connection()?;
+    let transaction = connection
+      .transaction()
+      .map_err(|error| format!("Failed to open SQLite transaction: {error}"))?;
+
+    let path = PathBuf::from(&input.path);
+    let name = path
+      .file_name()
+      .and_then(|value| value.to_str())
+      .map(str::trim)
+      .filter(|value| !value.is_empty())
+      .ok_or_else(|| format!("Invalid file name for path '{}'", input.path))?
+      .to_string();
+
+    let extension = path
+      .extension()
+      .and_then(|value| value.to_str())
+      .map(|value| value.to_ascii_lowercase());
+
+    let parent_path = path
+      .parent()
+      .map(|value| value.to_string_lossy().into_owned())
+      .unwrap_or_default();
+
+    let normalized_name = normalize_text(&name);
+    let normalized_path = normalize_path_string(&input.path);
+    let file_id = format!("file::{normalized_path}");
+    let now = current_timestamp_ms();
+    let last_seen_at = input.last_seen_at.unwrap_or(now);
+    let normalized_content_text = input.content_text.map(|content| content.to_lowercase());
+    let content_indexed = normalized_content_text
+      .as_ref()
+      .map(|content| !content.trim().is_empty())
+      .unwrap_or(false);
+    let content_indexed_as_int = if content_indexed { 1 } else { 0 };
+
+    transaction
+      .execute(
+        r#"
+        INSERT INTO file_records (
+          id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          size_bytes,
+          modified_at,
+          content_text,
+          content_indexed,
+          last_seen_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        ON CONFLICT(normalized_path)
+        DO UPDATE SET
+          name = excluded.name,
+          extension = excluded.extension,
+          normalized_name = excluded.normalized_name,
+          parent_path = excluded.parent_path,
+          size_bytes = excluded.size_bytes,
+          modified_at = excluded.modified_at,
+          content_text = excluded.content_text,
+          content_indexed = excluded.content_indexed,
+          last_seen_at = excluded.last_seen_at,
+          updated_at = excluded.updated_at;
+        "#,
+        params![
+          file_id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          input.size_bytes,
+          input.modified_at,
+          normalized_content_text,
+          content_indexed_as_int,
+          last_seen_at,
+          now,
+          now
+        ],
+      )
+      .map_err(|error| format!("Failed to upsert file record '{}': {error}", input.path))?;
+
+    transaction
+      .commit()
+      .map_err(|error| format!("Failed to commit file upsert transaction: {error}"))?;
+
+    self.get_file_record_by_path(&input.path)
+  }
+
+  pub fn list_files(&self, limit: u32) -> Result<Vec<FileRecord>, String> {
+    let connection = self.open_connection()?;
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT
+          id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          size_bytes,
+          modified_at,
+          content_indexed,
+          last_seen_at,
+          created_at,
+          updated_at
+        FROM file_records
+        ORDER BY last_seen_at DESC, name ASC
+        LIMIT ?1;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare file listing query: {error}"))?;
+
+    let row_iter = statement
+      .query_map([i64::from(limit)], map_file_record)
+      .map_err(|error| format!("Failed to query file records: {error}"))?;
+
+    row_iter
+      .collect::<Result<Vec<_>, _>>()
+      .map_err(|error| format!("Failed to parse file records: {error}"))
+  }
+
+  pub fn get_file_record_snapshot(&self, path: &str) -> Result<Option<FileRecordSnapshot>, String> {
+    let connection = self.open_connection()?;
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT size_bytes, modified_at
+        FROM file_records
+        WHERE normalized_path = ?1;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare file snapshot lookup query: {error}"))?;
+
+    statement
+      .query_row([normalize_path_string(path)], |row| {
+        Ok(FileRecordSnapshot {
+          size_bytes: row.get(0)?,
+          modified_at: row.get(1)?,
+        })
+      })
+      .optional()
+      .map_err(|error| format!("Failed to load file snapshot '{}': {error}", path))
+  }
+
+  pub fn search_files(&self, query: &str, limit: u32) -> Result<Vec<FileRecord>, String> {
+    let normalized_query = normalize_text(query);
+    let connection = self.open_connection()?;
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT
+          id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          size_bytes,
+          modified_at,
+          content_indexed,
+          last_seen_at,
+          created_at,
+          updated_at
+        FROM file_records
+        WHERE normalized_name LIKE ?1 OR content_text LIKE ?2
+        ORDER BY
+          CASE
+            WHEN normalized_name LIKE ?3 THEN 0
+            ELSE 1
+          END,
+          last_seen_at DESC,
+          name ASC
+        LIMIT ?4;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare file search query: {error}"))?;
+
+    let like_pattern = format!("%{normalized_query}%");
+    let content_like_pattern = like_pattern.clone();
+    let prefix_pattern = format!("{normalized_query}%");
+    let row_iter = statement
+      .query_map(
+        params![like_pattern, content_like_pattern, prefix_pattern, i64::from(limit)],
+        map_file_record,
+      )
+      .map_err(|error| format!("Failed to search file records: {error}"))?;
+
+    row_iter
+      .collect::<Result<Vec<_>, _>>()
+      .map_err(|error| format!("Failed to parse searched file records: {error}"))
+  }
+
+  pub fn list_indexed_file_paths_for_roots(&self, roots: &[String]) -> Result<Vec<String>, String> {
+    if roots.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    let connection = self.open_connection()?;
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT normalized_path
+        FROM file_records
+        WHERE normalized_path = ?1 OR normalized_path LIKE ?2;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare indexed path lookup query: {error}"))?;
+
+    let mut dedup = HashSet::new();
+
+    for root in roots {
+      let normalized_root = normalize_path_string(root);
+      if normalized_root.is_empty() {
+        continue;
+      }
+
+      let like_pattern = format!("{}\\%", normalized_root.trim_end_matches('\\'));
+      let path_iter = statement
+        .query_map(params![normalized_root, like_pattern], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Failed to query indexed paths for root '{}': {error}", root))?;
+
+      for path_result in path_iter {
+        let path = path_result.map_err(|error| {
+          format!("Failed to read indexed path row for root '{}': {error}", root)
+        })?;
+        dedup.insert(path);
+      }
+    }
+
+    Ok(dedup.into_iter().collect())
+  }
+
+  pub fn delete_file_records_by_normalized_paths(&self, normalized_paths: &[String]) -> Result<u32, String> {
+    if normalized_paths.is_empty() {
+      return Ok(0);
+    }
+
+    let mut connection = self.open_connection()?;
+    let transaction = connection
+      .transaction()
+      .map_err(|error| format!("Failed to open SQLite transaction for file pruning: {error}"))?;
+
+    let mut statement = transaction
+      .prepare("DELETE FROM file_records WHERE normalized_path = ?1;")
+      .map_err(|error| format!("Failed to prepare file pruning statement: {error}"))?;
+
+    let mut deleted_count: u32 = 0;
+
+    for normalized_path in normalized_paths {
+      let affected = statement
+        .execute([normalized_path.as_str()])
+        .map_err(|error| format!("Failed to prune file record '{}': {error}", normalized_path))?;
+      deleted_count = deleted_count.saturating_add(affected as u32);
+    }
+
+    drop(statement);
+
+    transaction
+      .commit()
+      .map_err(|error| format!("Failed to commit file pruning transaction: {error}"))?;
+
+    Ok(deleted_count)
+  }
+
   pub fn set_source_version(&self, source: &str, collector_version: &str) -> Result<(), String> {
     let connection = self.open_connection()?;
     let updated_at = current_timestamp_ms();
@@ -322,6 +634,35 @@ impl AppIndexStore {
       .map_err(|error| format!("Failed to load app record '{app_id}': {error}"))
   }
 
+  fn get_file_record_by_path(&self, path: &str) -> Result<FileRecord, String> {
+    let connection = self.open_connection()?;
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT
+          id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          size_bytes,
+          modified_at,
+          content_indexed,
+          last_seen_at,
+          created_at,
+          updated_at
+        FROM file_records
+        WHERE normalized_path = ?1;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare file lookup query: {error}"))?;
+
+    statement
+      .query_row([normalize_path_string(path)], map_file_record)
+      .map_err(|error| format!("Failed to load file record '{}': {error}", path))
+  }
+
   fn open_connection(&self) -> Result<Connection, String> {
     let connection = Connection::open(&self.db_path).map_err(|error| {
       format!(
@@ -357,6 +698,25 @@ fn map_app_record(row: &Row<'_>) -> rusqlite::Result<AppRecord> {
   })
 }
 
+fn map_file_record(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
+  let content_indexed_as_int: i64 = row.get(8)?;
+
+  Ok(FileRecord {
+    id: row.get(0)?,
+    name: row.get(1)?,
+    extension: row.get(2)?,
+    normalized_name: row.get(3)?,
+    normalized_path: row.get(4)?,
+    parent_path: row.get(5)?,
+    size_bytes: row.get(6)?,
+    modified_at: row.get(7)?,
+    content_indexed: content_indexed_as_int != 0,
+    last_seen_at: row.get(9)?,
+    created_at: row.get(10)?,
+    updated_at: row.get(11)?,
+  })
+}
+
 fn parse_aliases_json(value: &str, column_index: usize) -> rusqlite::Result<Vec<String>> {
   serde_json::from_str(value).map_err(|error| {
     rusqlite::Error::FromSqlConversionFailure(column_index, Type::Text, Box::new(error))
@@ -377,6 +737,9 @@ fn run_migrations(connection: &Connection) -> Result<(), String> {
       1 => connection
         .execute_batch(MIGRATION_0001_INITIAL)
         .map_err(|error| format!("Failed to apply migration v1: {error}"))?,
+      2 => connection
+        .execute_batch(MIGRATION_0002_FILE_RECORDS)
+        .map_err(|error| format!("Failed to apply migration v2: {error}"))?,
       _ => {
         return Err(format!("Missing migration implementation for version {version}"));
       }
@@ -396,6 +759,10 @@ fn normalize_text(value: &str) -> String {
     .split_whitespace()
     .collect::<Vec<_>>()
     .join(" ")
+}
+
+fn normalize_path_string(path: &str) -> String {
+  path.trim().replace('/', "\\").to_lowercase()
 }
 
 fn current_timestamp_ms() -> i64 {

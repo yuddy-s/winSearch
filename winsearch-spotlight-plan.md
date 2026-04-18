@@ -16,6 +16,11 @@ The following capabilities are mandatory for V1 and are no longer optional:
 - File content search (for supported text-based formats).
 - Open selected file directly.
 - Reveal selected file location in Windows File Explorer.
+- Hybrid indexing policy that prioritizes low gaming impact:
+  - one initial full scan of user folders
+  - quick incremental scan on app open
+  - watcher/event-driven updates
+  - no heavy always-on background scan by default
 
 These are now release-gating requirements.
 
@@ -44,6 +49,16 @@ These are now release-gating requirements.
 - Search layer: fuzzy file-name matching + content matching + weighted ranking.
 - Action layer: open target and reveal file in Explorer, with usage logging.
 - UI layer: Spotlight-like overlay with keyboard-first navigation.
+
+## Indexing Policy (Default: Gaming Mode)
+
+- Scan scope default: user folders only (`Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Videos`).
+- First run: one full baseline scan.
+- Normal startup: quick incremental pass only.
+- Continuous freshness: filesystem watcher events with debounce/batching.
+- Background heavy scans: off by default.
+- Performance protection: pause or throttle indexing when fullscreen apps/games or high CPU load are detected.
+- User control: manual full refresh and pause indexing toggle.
 
 ---
 
@@ -157,6 +172,9 @@ Populate the index with real files first, then app sources.
 ### Work
 - Implement file collector for user-selected folders with recursive crawl and ignore rules.
 - Implement incremental file refresh (change detection by path + mtime/size).
+- Implement auto-root presets for common user folders.
+- Implement filesystem watcher pipeline for near-real-time updates without full rescans.
+- Implement first-run full scan marker to avoid repeated full scans on every launch.
 - Implement Start Menu shortcut collector.
 - Implement installed program collector from registry.
 - Implement UWP package app collector.
@@ -250,6 +268,9 @@ Complete the core loop and prepare for user customization.
 - Add basic settings surface:
   - hotkey override
   - indexed folder management
+  - indexing mode selector (`Gaming`, `Balanced`, `Always Fresh`)
+  - pause indexing toggle
+  - manual full refresh
   - launch at startup toggle
   - clear usage history
 - Add safe error feedback for broken launch targets.
@@ -279,7 +300,9 @@ Hit performance targets consistently, not just on dev hardware.
 - Optimize hot path allocations in query/ranking.
 - Add icon cache and async loading.
 - Add DB health checks and recovery flow for corruption.
-- Add background incremental index refresh strategy.
+- Add watcher + incremental refresh scheduling strategy.
+- Add performance guards for fullscreen/game sessions and high CPU load.
+- Ensure background indexing is low-impact and optional by policy.
 
 ### Deliverables
 - Performance benchmark scripts.
@@ -389,7 +412,7 @@ To start implementation immediately with high momentum:
 1. Phase 1 bootstrap.
 2. Phase 2 hotkey + overlay shell.
 3. Phase 3 file-first schema + SQLite store.
-4. Phase 4 file collector first (then Start Menu/registry/UWP).
+4. Phase 4 file collector with user-folder presets + watcher/incremental pipeline first (then Start Menu/registry/UWP).
 5. Phase 5 file-name + content ranking baseline.
 
 This gets to a usable MVP fastest while keeping room for polish and expansion.

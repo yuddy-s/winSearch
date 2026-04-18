@@ -28,7 +28,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' http://localhost:1420 http://127.0.0.1:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420 http://127.0.0.1:1420; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src 'self' ipc: http://localhost:1420 ws://localhost:1420 http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'none'; frame-ancestors 'none';"
     }
   },
   "bundle": {

@@ -15,6 +15,20 @@ The most important WinSearch outcome is now explicitly file-first:
 
 These are treated as must-have release requirements.
 
+Default indexing behavior target:
+
+- first-run full scan of user folders
+- incremental scan on app open
+- watcher-driven updates
+- low-impact gaming-friendly defaults (no heavy always-on background scan)
+
+Current implementation status for this policy:
+
+- first-run full scan of default user folders is wired
+- app-open incremental scan of default user folders is wired
+- watcher-driven updates are wired with debounce
+- UI controls include manual full refresh, pause/resume indexing, and indexing status display
+
 ## Quick Start
 
 ```bash
@@ -55,7 +69,7 @@ npm run setup
 - Phase 1 complete: repository bootstrap and engineering foundations
 - Phase 2 complete: hidden overlay window, global hotkey registration, and focus-safe open/close loop
 - Phase 3 foundation complete: SQLite schema, migration path, and initial index store APIs
-- Phase 4 started: Start Menu collector implemented and wired to index
+- Phase 4 started: Start Menu collector plus first filesystem collector/index commands
 
 ## Prerequisites
 
