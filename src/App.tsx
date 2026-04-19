@@ -90,6 +90,7 @@ function App() {
   const [isManualRefreshLoading, setIsManualRefreshLoading] = useState(false);
   const [isPauseToggleLoading, setIsPauseToggleLoading] = useState(false);
   const [manualRefreshNotice, setManualRefreshNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatus | null>(null);
   const [fileResults, setFileResults] = useState<FileRecord[]>([]);
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus>({
@@ -153,6 +154,7 @@ function App() {
     const unlistenClosedPromise = listen("winsearch://overlay-closed", () => {
       setQuery("");
       setSelectedIndex(0);
+      setActionNotice(null);
     });
 
     const unlistenIndexingStatusPromise = listen<IndexingStatus>("winsearch://indexing-status", (event) => {
@@ -228,14 +230,51 @@ function App() {
   };
 
   const launchSelection = async () => {
-    const active = results[selectedIndex];
+    if (!isTauri) {
+      const active = results[selectedIndex];
+      if (!active) {
+        return;
+      }
+      logger.info("Launch placeholder selected", active);
+      await closeOverlay();
+      return;
+    }
 
+    const active = fileResults[selectedIndex];
     if (!active) {
       return;
     }
 
-    logger.info("Launch placeholder selected", active);
-    await closeOverlay();
+    try {
+      await invoke("open_file_index_record", { fileId: active.id });
+      setActionNotice(null);
+      await closeOverlay();
+    } catch (error) {
+      logger.warn("Failed to open selected file", error);
+      setActionNotice("Could not open that file. It may have been moved or deleted.");
+      await refreshResults();
+    }
+  };
+
+  const revealSelectionInExplorer = async () => {
+    if (!isTauri) {
+      return;
+    }
+
+    const active = fileResults[selectedIndex];
+    if (!active) {
+      return;
+    }
+
+    try {
+      await invoke("reveal_file_index_record", { fileId: active.id });
+      setActionNotice(null);
+      await closeOverlay();
+    } catch (error) {
+      logger.warn("Failed to reveal selected file in Explorer", error);
+      setActionNotice("Could not reveal that file. It may have been moved or deleted.");
+      await refreshResults();
+    }
   };
 
   const refreshResults = async () => {
@@ -317,6 +356,12 @@ function App() {
       return;
     }
 
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      await revealSelectionInExplorer();
+      return;
+    }
+
     if (event.key === "Enter") {
       event.preventDefault();
       await launchSelection();
@@ -338,7 +383,7 @@ function App() {
           <span className="hotkey-badge">{hotkeyStatus.activeShortcut ?? "No hotkey"}</span>
         </header>
         <label className="search-input-wrap" htmlFor="search-input">
-          <span className="sr-only">Search applications</span>
+          <span className="sr-only">Search files</span>
           <input
             id="search-input"
             ref={inputRef}
@@ -346,6 +391,7 @@ function App() {
             onChange={(event) => {
               setQuery(event.target.value);
               setSelectedIndex(0);
+              setActionNotice(null);
             }}
             onKeyDown={(event) => {
               void onInputKeyDown(event);
@@ -403,9 +449,10 @@ function App() {
         ) : null}
 
         {manualRefreshNotice ? <p className="notice">{manualRefreshNotice}</p> : null}
+        {actionNotice ? <p className="notice">{actionNotice}</p> : null}
         {indexingStatus?.lastError ? <p className="notice">Indexing note: {indexingStatus.lastError}</p> : null}
 
-        <ul className="results" role="listbox" aria-label="Application search results">
+        <ul className="results" role="listbox" aria-label="File search results">
           {results.length === 0 ? (
             <li className="empty-state">No matches yet. Keep typing.</li>
           ) : (
@@ -415,6 +462,14 @@ function App() {
                 key={item.id}
                 role="option"
                 aria-selected={index === selectedIndex}
+                onMouseEnter={() => {
+                  setSelectedIndex(index);
+                }}
+                onDoubleClick={() => {
+                  if (isTauri) {
+                    void launchSelection();
+                  }
+                }}
               >
                 <span>{item.name}</span>
                 <small>{isTauri ? (item as FileRecord).parentPath : (item as SearchItem).hint}</small>
@@ -424,9 +479,9 @@ function App() {
         </ul>
 
         <div className="footer-row">
-          <span>Enter to open (placeholder)</span>
+          <span>Enter to open file</span>
+          <span>Ctrl+Enter to reveal in Explorer</span>
           <span>Esc or outside click to close</span>
-          <span>File-first index and status controls active</span>
         </div>
 
         {hotkeyStatus.fallbackInUse ? (

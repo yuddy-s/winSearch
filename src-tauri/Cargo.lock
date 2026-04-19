@@ -5113,6 +5113,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

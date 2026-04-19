@@ -38,7 +38,7 @@ This document captures the first file-system collector slice for the file-first 
 - Indexes file metadata:
   - name, extension, path, parent path, size, modified timestamp.
 - Reads content text for supported text formats when file size is <= 256 KB.
-- Stores normalized lowercase content for basic `LIKE`-based content matching.
+- Stores normalized lowercase content and syncs into an SQLite `FTS5` index for faster content matching.
 - Incremental mode skips unchanged files using `size_bytes + modified_at` snapshot checks.
 - Incremental mode prunes deleted files from index by comparing scanned paths against indexed paths under roots.
 
@@ -49,6 +49,8 @@ This document captures the first file-system collector slice for the file-first 
 - Added symlink/reparse-point skip logic during traversal.
 - Added canonical visited-directory tracking and max traversal depth.
 - Added per-run indexed-file cap to reduce worst-case DoS impact.
+- Added explicit root-path validation to reject symlink/reparse roots before traversal begins.
+- Escaped SQL `LIKE` wildcard characters when matching indexed paths under user-provided roots.
 
 ## Notes
 

@@ -6,7 +6,10 @@ use db::{AppIndexStore, AppRecord, FileRecord, IndexStatus};
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::{
+  fs,
+  path::Path,
   path::PathBuf,
+  process::Command,
   sync::{mpsc, Arc, Mutex},
   thread,
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -22,6 +25,7 @@ const HOTKEY_CANDIDATES: [&str; 2] = ["Alt+Space", "Ctrl+Shift+Space"];
 const FILESYSTEM_BASELINE_SOURCE: &str = "filesystem_baseline";
 const FILESYSTEM_BASELINE_VERSION: &str = "1";
 const MAX_FILE_SEARCH_QUERY_CHARS: usize = 256;
+const MAX_FILE_ID_CHARS: usize = 1024;
 const WATCHER_DEBOUNCE_MS: u64 = 1500;
 
 type IndexingStateHandle = Arc<Mutex<IndexingState>>;
@@ -217,6 +221,95 @@ fn search_file_index(
   let safe_query = normalized_query.chars().take(MAX_FILE_SEARCH_QUERY_CHARS).collect::<String>();
   let bounded_limit = limit.unwrap_or(50).clamp(1, 500);
   store.search_files(&safe_query, bounded_limit)
+}
+
+#[tauri::command]
+fn open_file_index_record(store: State<AppIndexStore>, file_id: String) -> Result<(), String> {
+  let file_path = resolve_indexed_file_path(store.inner(), &file_id)?;
+  open_path_with_system_default(&file_path)
+}
+
+#[tauri::command]
+fn reveal_file_index_record(store: State<AppIndexStore>, file_id: String) -> Result<(), String> {
+  let file_path = resolve_indexed_file_path(store.inner(), &file_id)?;
+
+  let mut command = Command::new("explorer.exe");
+  command.arg("/select,");
+  command.arg(&file_path);
+
+  command
+    .spawn()
+    .map_err(|error| format!("Failed to reveal file in Explorer '{}': {error}", file_path.display()))?;
+
+  Ok(())
+}
+
+fn resolve_indexed_file_path(store: &AppIndexStore, file_id: &str) -> Result<PathBuf, String> {
+  let normalized_file_id = file_id.trim();
+  if normalized_file_id.is_empty() {
+    return Err("Missing file id".to_string());
+  }
+  if normalized_file_id.chars().count() > MAX_FILE_ID_CHARS {
+    return Err("File id is too long".to_string());
+  }
+
+  let file_record = store
+    .get_file_record_by_id(normalized_file_id)?
+    .ok_or_else(|| "The selected file is no longer indexed".to_string())?;
+
+  let file_path = PathBuf::from(&file_record.normalized_path);
+  if !file_path.is_absolute() {
+    return Err("Indexed file path is invalid".to_string());
+  }
+
+  let metadata = fs::metadata(&file_path)
+    .map_err(|_| format!("File no longer exists: {}", file_path.display()))?;
+
+  if !metadata.is_file() {
+    return Err(format!("Indexed path is not a file: {}", file_path.display()));
+  }
+
+  Ok(file_path)
+}
+
+fn open_path_with_system_default(path: &Path) -> Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{Foundation::HWND, UI::Shell::ShellExecuteW};
+
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let operation: Vec<u16> = OsStr::new("open").encode_wide().chain(Some(0)).collect();
+    let file: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+
+    let result = unsafe {
+      ShellExecuteW(
+        0 as HWND,
+        operation.as_ptr(),
+        file.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        SW_SHOWNORMAL,
+      )
+    } as isize;
+
+    if result <= 32 {
+      return Err(format!(
+        "Windows failed to open file '{}' (shell code {result})",
+        path.display()
+      ));
+    }
+
+    Ok(())
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    let _ = path;
+    Err("Opening files is only supported on Windows builds".to_string())
+  }
 }
 
 fn toggle_overlay_visibility(app: &AppHandle, force_visible: bool) -> Result<(), String> {
@@ -615,7 +708,9 @@ pub fn run() {
       set_indexing_paused,
       collect_default_user_folders,
       list_file_index_records,
-      search_file_index
+      search_file_index,
+      open_file_index_record,
+      reveal_file_index_record
     ])
     .run(tauri::generate_context!())
     .expect("error while running WinSearch application");

@@ -8,9 +8,12 @@ use std::{
 };
 
 const DB_FILE_NAME: &str = "winsearch.db";
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const MIGRATION_0001_INITIAL: &str = include_str!("../../migrations/0001_initial.sql");
 const MIGRATION_0002_FILE_RECORDS: &str = include_str!("../../migrations/0002_file_records.sql");
+const MIGRATION_0003_FILE_RECORDS_FTS5: &str =
+  include_str!("../../migrations/0003_file_records_fts5.sql");
+const SQLITE_LIKE_ESCAPE_CHAR: char = '\\';
 
 #[derive(Clone)]
 pub struct AppIndexStore {
@@ -108,6 +111,7 @@ impl AppIndexStore {
         r#"
         PRAGMA journal_mode=WAL;
         PRAGMA foreign_keys=ON;
+        PRAGMA trusted_schema=OFF;
       "#,
       )
       .map_err(|error| format!("Failed to apply SQLite pragmas: {error}"))?;
@@ -452,8 +456,7 @@ impl AppIndexStore {
       .map_err(|error| format!("Failed to load file snapshot '{}': {error}", path))
   }
 
-  pub fn search_files(&self, query: &str, limit: u32) -> Result<Vec<FileRecord>, String> {
-    let normalized_query = normalize_text(query);
+  pub fn get_file_record_by_id(&self, file_id: &str) -> Result<Option<FileRecord>, String> {
     let connection = self.open_connection()?;
     let mut statement = connection
       .prepare(
@@ -472,32 +475,159 @@ impl AppIndexStore {
           created_at,
           updated_at
         FROM file_records
-        WHERE normalized_name LIKE ?1 OR content_text LIKE ?2
+        WHERE id = ?1;
+        "#,
+      )
+      .map_err(|error| format!("Failed to prepare file-id lookup query: {error}"))?;
+
+    statement
+      .query_row([file_id], map_file_record)
+      .optional()
+      .map_err(|error| format!("Failed to load file record by id '{}': {error}", file_id))
+  }
+
+  pub fn search_files(&self, query: &str, limit: u32) -> Result<Vec<FileRecord>, String> {
+    let normalized_query = normalize_text(query);
+    if normalized_query.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    let escaped_query = escape_like_pattern(&normalized_query);
+    let like_pattern = format!("%{escaped_query}%");
+    let prefix_pattern = format!("{escaped_query}%");
+    let connection = self.open_connection()?;
+    let limit_i64 = i64::from(limit);
+
+    if let Some(fts_query) = build_fts_prefix_query(&normalized_query) {
+      let content_limit_i64 = i64::from(limit.saturating_mul(5).max(50));
+      let mut statement = connection
+        .prepare(
+          r#"
+          WITH
+            name_matches AS (
+              SELECT
+                id AS file_id,
+                CASE
+                  WHEN normalized_name = ?1 THEN 0
+                  WHEN normalized_name LIKE ?2 ESCAPE '\' THEN 1
+                  WHEN normalized_name LIKE ?3 ESCAPE '\' THEN 2
+                  ELSE 3
+                END AS name_rank,
+                0 AS content_hit,
+                0.0 AS content_rank
+              FROM file_records
+              WHERE normalized_name LIKE ?3 ESCAPE '\'
+            ),
+            content_matches AS (
+              SELECT
+                file_id,
+                4 AS name_rank,
+                1 AS content_hit,
+                bm25(file_records_fts) AS content_rank
+              FROM file_records_fts
+              WHERE file_records_fts MATCH ?4
+              LIMIT ?5
+            ),
+            combined AS (
+              SELECT * FROM name_matches
+              UNION ALL
+              SELECT * FROM content_matches
+            ),
+            dedup AS (
+              SELECT
+                file_id,
+                MIN(name_rank) AS best_name_rank,
+                MAX(content_hit) AS content_hit,
+                MIN(content_rank) AS best_content_rank
+              FROM combined
+              GROUP BY file_id
+            )
+          SELECT
+            fr.id,
+            fr.name,
+            fr.extension,
+            fr.normalized_name,
+            fr.normalized_path,
+            fr.parent_path,
+            fr.size_bytes,
+            fr.modified_at,
+            fr.content_indexed,
+            fr.last_seen_at,
+            fr.created_at,
+            fr.updated_at
+          FROM dedup d
+          JOIN file_records fr ON fr.id = d.file_id
+          ORDER BY
+            d.best_name_rank ASC,
+            d.content_hit DESC,
+            CASE
+              WHEN d.content_hit = 1 THEN d.best_content_rank
+              ELSE 0
+            END ASC,
+            fr.last_seen_at DESC,
+            fr.name ASC
+          LIMIT ?6;
+          "#,
+        )
+        .map_err(|error| format!("Failed to prepare FTS-backed file search query: {error}"))?;
+
+      let row_iter = statement
+        .query_map(
+          params![
+            normalized_query,
+            prefix_pattern,
+            like_pattern,
+            fts_query,
+            content_limit_i64,
+            limit_i64
+          ],
+          map_file_record,
+        )
+        .map_err(|error| format!("Failed to run FTS-backed file search query: {error}"))?;
+
+      return row_iter
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to parse FTS-backed file search results: {error}"));
+    }
+
+    let mut statement = connection
+      .prepare(
+        r#"
+        SELECT
+          id,
+          name,
+          extension,
+          normalized_name,
+          normalized_path,
+          parent_path,
+          size_bytes,
+          modified_at,
+          content_indexed,
+          last_seen_at,
+          created_at,
+          updated_at
+        FROM file_records
+        WHERE normalized_name LIKE ?2 ESCAPE '\'
         ORDER BY
           CASE
-            WHEN normalized_name LIKE ?3 THEN 0
-            ELSE 1
+            WHEN normalized_name = ?1 THEN 0
+            WHEN normalized_name LIKE ?3 ESCAPE '\' THEN 1
+            ELSE 2
           END,
           last_seen_at DESC,
           name ASC
         LIMIT ?4;
         "#,
       )
-      .map_err(|error| format!("Failed to prepare file search query: {error}"))?;
+      .map_err(|error| format!("Failed to prepare name-only file search query: {error}"))?;
 
-    let like_pattern = format!("%{normalized_query}%");
-    let content_like_pattern = like_pattern.clone();
-    let prefix_pattern = format!("{normalized_query}%");
     let row_iter = statement
-      .query_map(
-        params![like_pattern, content_like_pattern, prefix_pattern, i64::from(limit)],
-        map_file_record,
-      )
-      .map_err(|error| format!("Failed to search file records: {error}"))?;
+      .query_map(params![normalized_query, like_pattern, prefix_pattern, limit_i64], map_file_record)
+      .map_err(|error| format!("Failed to run name-only file search query: {error}"))?;
 
     row_iter
       .collect::<Result<Vec<_>, _>>()
-      .map_err(|error| format!("Failed to parse searched file records: {error}"))
+      .map_err(|error| format!("Failed to parse name-only file search results: {error}"))
   }
 
   pub fn list_indexed_file_paths_for_roots(&self, roots: &[String]) -> Result<Vec<String>, String> {
@@ -511,7 +641,7 @@ impl AppIndexStore {
         r#"
         SELECT normalized_path
         FROM file_records
-        WHERE normalized_path = ?1 OR normalized_path LIKE ?2;
+        WHERE normalized_path = ?1 OR normalized_path LIKE ?2 ESCAPE '\';
         "#,
       )
       .map_err(|error| format!("Failed to prepare indexed path lookup query: {error}"))?;
@@ -524,7 +654,13 @@ impl AppIndexStore {
         continue;
       }
 
-      let like_pattern = format!("{}\\%", normalized_root.trim_end_matches('\\'));
+      let normalized_root_prefix = normalized_root.trim_end_matches('\\');
+      if normalized_root_prefix.is_empty() {
+        continue;
+      }
+
+      let escaped_root_prefix = escape_like_pattern(normalized_root_prefix);
+      let like_pattern = format!("{escaped_root_prefix}\\\\%");
       let path_iter = statement
         .query_map(params![normalized_root, like_pattern], |row| row.get::<_, String>(0))
         .map_err(|error| format!("Failed to query indexed paths for root '{}': {error}", root))?;
@@ -672,7 +808,12 @@ impl AppIndexStore {
     })?;
 
     connection
-      .execute_batch("PRAGMA foreign_keys=ON;")
+      .execute_batch(
+        r#"
+        PRAGMA foreign_keys=ON;
+        PRAGMA trusted_schema=OFF;
+      "#,
+      )
       .map_err(|error| format!("Failed to enable SQLite foreign keys: {error}"))?;
 
     Ok(connection)
@@ -740,6 +881,9 @@ fn run_migrations(connection: &Connection) -> Result<(), String> {
       2 => connection
         .execute_batch(MIGRATION_0002_FILE_RECORDS)
         .map_err(|error| format!("Failed to apply migration v2: {error}"))?,
+      3 => connection
+        .execute_batch(MIGRATION_0003_FILE_RECORDS_FTS5)
+        .map_err(|error| format!("Failed to apply migration v3: {error}"))?,
       _ => {
         return Err(format!("Missing migration implementation for version {version}"));
       }
@@ -765,9 +909,155 @@ fn normalize_path_string(path: &str) -> String {
   path.trim().replace('/', "\\").to_lowercase()
 }
 
+fn escape_like_pattern(value: &str) -> String {
+  let mut escaped = String::with_capacity(value.len());
+
+  for ch in value.chars() {
+    if ch == SQLITE_LIKE_ESCAPE_CHAR || ch == '%' || ch == '_' {
+      escaped.push(SQLITE_LIKE_ESCAPE_CHAR);
+    }
+    escaped.push(ch);
+  }
+
+  escaped
+}
+
+fn build_fts_prefix_query(value: &str) -> Option<String> {
+  let mut tokens: Vec<String> = Vec::new();
+
+  for token in value.split_whitespace() {
+    let cleaned = token.trim();
+    if cleaned.is_empty() {
+      continue;
+    }
+
+    let escaped = cleaned.replace('"', "\"\"");
+    if escaped.is_empty() {
+      continue;
+    }
+
+    tokens.push(format!("\"{escaped}\"*"));
+  }
+
+  if tokens.is_empty() {
+    None
+  } else {
+    Some(tokens.join(" AND "))
+  }
+}
+
 fn current_timestamp_ms() -> i64 {
   match SystemTime::now().duration_since(UNIX_EPOCH) {
     Ok(duration) => duration.as_millis() as i64,
     Err(_) => 0,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  #[test]
+  fn list_indexed_paths_for_roots_escapes_like_wildcards() {
+    let data_dir = unique_temp_dir("wildcard-root");
+    let store = AppIndexStore::initialize(&data_dir).expect("store initialization should succeed");
+
+    store
+      .upsert_file_record(FileRecordUpsert {
+        path: r"C:\safe%root\nested\inside.txt".to_string(),
+        size_bytes: 11,
+        modified_at: 1,
+        content_text: None,
+        last_seen_at: Some(1),
+      })
+      .expect("upsert for wildcard root path should succeed");
+    store
+      .upsert_file_record(FileRecordUpsert {
+        path: r"C:\safeXroot\nested\outside.txt".to_string(),
+        size_bytes: 12,
+        modified_at: 2,
+        content_text: None,
+        last_seen_at: Some(2),
+      })
+      .expect("upsert for non-matching sibling path should succeed");
+
+    let indexed = store
+      .list_indexed_file_paths_for_roots(&[r"C:\safe%root".to_string()])
+      .expect("indexed lookup should succeed");
+
+    assert_eq!(indexed.len(), 1);
+    assert!(indexed.iter().any(|value| value == r"c:\safe%root\nested\inside.txt"));
+
+    let _ = fs::remove_dir_all(&data_dir);
+  }
+
+  #[test]
+  fn search_files_uses_fts_content_matching() {
+    let data_dir = unique_temp_dir("fts-content-match");
+    let store = AppIndexStore::initialize(&data_dir).expect("store initialization should succeed");
+
+    store
+      .upsert_file_record(FileRecordUpsert {
+        path: r"C:\docs\weekly-notes.txt".to_string(),
+        size_bytes: 21,
+        modified_at: 1,
+        content_text: Some("release checklist hyperdrive beta".to_string()),
+        last_seen_at: Some(10),
+      })
+      .expect("upsert for content-indexed file should succeed");
+
+    let results = store
+      .search_files("hyperdrive", 10)
+      .expect("content-backed search should succeed");
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].normalized_path, r"c:\docs\weekly-notes.txt");
+
+    let _ = fs::remove_dir_all(&data_dir);
+  }
+
+  #[test]
+  fn search_files_prefers_name_match_before_content_only_match() {
+    let data_dir = unique_temp_dir("name-rank-priority");
+    let store = AppIndexStore::initialize(&data_dir).expect("store initialization should succeed");
+
+    store
+      .upsert_file_record(FileRecordUpsert {
+        path: r"C:\docs\secret-plan.txt".to_string(),
+        size_bytes: 22,
+        modified_at: 1,
+        content_text: None,
+        last_seen_at: Some(100),
+      })
+      .expect("upsert for name-match file should succeed");
+
+    store
+      .upsert_file_record(FileRecordUpsert {
+        path: r"C:\docs\notes.txt".to_string(),
+        size_bytes: 23,
+        modified_at: 2,
+        content_text: Some("contains secret architecture details".to_string()),
+        last_seen_at: Some(200),
+      })
+      .expect("upsert for content-match file should succeed");
+
+    let results = store
+      .search_files("secret", 10)
+      .expect("search should succeed");
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].normalized_path, r"c:\docs\secret-plan.txt");
+    assert_eq!(results[1].normalized_path, r"c:\docs\notes.txt");
+
+    let _ = fs::remove_dir_all(&data_dir);
+  }
+
+  fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let unique_suffix = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .expect("system time should be after unix epoch")
+      .as_nanos();
+    std::env::temp_dir().join(format!("winsearch-{prefix}-{unique_suffix}"))
   }
 }

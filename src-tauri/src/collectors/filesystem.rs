@@ -91,19 +91,58 @@ pub fn collect_paths_with_mode(
   let mut did_hit_file_cap = false;
 
   for root in roots {
-    let root_path = PathBuf::from(root);
-
-    if !root_path.exists() {
+    let normalized_root = root.trim();
+    if normalized_root.is_empty() {
       push_error(
         &mut report,
-        format!("Filesystem root does not exist and was skipped: '{}'", root_path.display()),
+        "Filesystem root path was empty and was skipped".to_string(),
       );
       report.skipped_entries += 1;
       continue;
     }
 
-    if root_path.is_file() {
+    let root_path = PathBuf::from(normalized_root);
+    let root_metadata = match fs::symlink_metadata(&root_path) {
+      Ok(metadata) => metadata,
+      Err(error) => {
+        push_error(
+          &mut report,
+          format!(
+            "Filesystem root could not be read and was skipped '{}': {error}",
+            root_path.display()
+          ),
+        );
+        report.skipped_entries += 1;
+        continue;
+      }
+    };
+
+    if is_symlink_or_reparse(&root_metadata) {
+      push_error(
+        &mut report,
+        format!(
+          "Filesystem root symlink/reparse points are not allowed and were skipped: '{}'",
+          root_path.display()
+        ),
+      );
+      report.skipped_entries += 1;
+      continue;
+    }
+
+    if root_metadata.is_file() {
       file_paths.push(root_path);
+      continue;
+    }
+
+    if !root_metadata.is_dir() {
+      push_error(
+        &mut report,
+        format!(
+          "Filesystem root is not a file or directory and was skipped: '{}'",
+          root_path.display()
+        ),
+      );
+      report.skipped_entries += 1;
       continue;
     }
 
@@ -117,12 +156,7 @@ pub fn collect_paths_with_mode(
   report.scanned_entries = file_paths.len() as u32;
 
   for file_path in &file_paths {
-    if !file_path.is_file() {
-      report.skipped_entries += 1;
-      continue;
-    }
-
-    let metadata = match fs::metadata(&file_path) {
+    let metadata = match fs::symlink_metadata(file_path) {
       Ok(metadata) => metadata,
       Err(error) => {
         push_error(
@@ -133,6 +167,11 @@ pub fn collect_paths_with_mode(
         continue;
       }
     };
+
+    if is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+      report.skipped_entries += 1;
+      continue;
+    }
 
     let modified_at = metadata
       .modified()

@@ -24,6 +24,7 @@ tauri = { version = "2.0", features = [] }
 tauri-plugin-global-shortcut = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Shell"] }
 
 [features]
 default = ["custom-protocol"]

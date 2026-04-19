@@ -15,6 +15,12 @@ The most important WinSearch outcome is now explicitly file-first:
 
 These are treated as must-have release requirements.
 
+Committed roadmap expansion after V1:
+
+- OCR text search support (images/PDFs)
+- duplicate and large-file discovery tools
+- recent-activity surfacing and recency-aware ranking
+
 Default indexing behavior target:
 
 - first-run full scan of user folders
@@ -28,6 +34,7 @@ Current implementation status for this policy:
 - app-open incremental scan of default user folders is wired
 - watcher-driven updates are wired with debounce
 - UI controls include manual full refresh, pause/resume indexing, and indexing status display
+- content search is backed by SQLite FTS5 with name/content/recency ranking
 
 ## Quick Start
 

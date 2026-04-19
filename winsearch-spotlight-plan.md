@@ -24,6 +24,15 @@ The following capabilities are mandatory for V1 and are no longer optional:
 
 These are now release-gating requirements.
 
+## Roadmap Lock (Post-V1, Committed)
+
+After V1 file-first requirements are complete, the roadmap is explicitly committed to include:
+
+- OCR-powered content search for image/PDF text discovery.
+- Duplicate file detection workflows.
+- Large file discovery/cleanup workflows.
+- Recent activity surfacing and recency-aware ranking views.
+
 ## North-Star Targets (V1)
 
 - Hotkey to open overlay: perceived instant, <= 700ms cold open.
@@ -389,6 +398,9 @@ Expand from file-first launcher to broader Spotlight equivalent.
 - Search categories and filters.
 - Calculator/math and quick web fallback.
 - Optional plugin/action framework.
+- OCR-powered text extraction/search for supported images and PDFs.
+- Duplicate file finder and large-file explorer workflows.
+- Recent activity view with stronger recency-aware ranking signals.
 
 ### V2 Guardrails
 - Keep app-launch speed unaffected.
