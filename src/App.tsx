@@ -85,6 +85,7 @@ const isTauriRuntime = (): boolean => {
 
 function App() {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const resultsRef = useRef<HTMLUListElement | null>(null);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isManualRefreshLoading, setIsManualRefreshLoading] = useState(false);
@@ -106,6 +107,7 @@ function App() {
   }, [query]);
 
   const results = isTauri ? fileResults : sampleResults;
+  const selectedFile = isTauri ? fileResults[selectedIndex] ?? null : null;
 
   useEffect(() => {
     if (!isTauri) {
@@ -191,6 +193,18 @@ function App() {
   }, [results, selectedIndex]);
 
   useEffect(() => {
+    const listElement = resultsRef.current;
+    if (!listElement) {
+      return;
+    }
+
+    const selectedElement = listElement.querySelector<HTMLElement>('[data-selected="true"]');
+    if (selectedElement && typeof selectedElement.scrollIntoView === "function") {
+      selectedElement.scrollIntoView({ block: "nearest" });
+    }
+  }, [selectedIndex, results.length]);
+
+  useEffect(() => {
     if (!isTauri) {
       return;
     }
@@ -261,7 +275,7 @@ function App() {
       return;
     }
 
-    const active = fileResults[selectedIndex];
+    const active = selectedFile;
     if (!active) {
       return;
     }
@@ -428,6 +442,16 @@ function App() {
                   ? "Resume Indexing"
                   : "Pause Indexing"}
             </button>
+            <button
+              type="button"
+              className="control-btn secondary"
+              disabled={!selectedFile}
+              onClick={() => {
+                void revealSelectionInExplorer();
+              }}
+            >
+              Open In File Explorer
+            </button>
           </div>
         ) : null}
 
@@ -452,7 +476,7 @@ function App() {
         {actionNotice ? <p className="notice">{actionNotice}</p> : null}
         {indexingStatus?.lastError ? <p className="notice">Indexing note: {indexingStatus.lastError}</p> : null}
 
-        <ul className="results" role="listbox" aria-label="File search results">
+        <ul ref={resultsRef} className="results" role="listbox" aria-label="File search results">
           {results.length === 0 ? (
             <li className="empty-state">No matches yet. Keep typing.</li>
           ) : (
@@ -462,6 +486,7 @@ function App() {
                 key={item.id}
                 role="option"
                 aria-selected={index === selectedIndex}
+                data-selected={index === selectedIndex}
                 onMouseEnter={() => {
                   setSelectedIndex(index);
                 }}

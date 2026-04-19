@@ -14,19 +14,27 @@ use std::{
   thread,
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+  menu::{Menu, MenuItem, PredefinedMenuItem},
+  tray::TrayIconBuilder,
+  AppHandle,
+  Emitter,
+  Manager,
+  State,
+};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tracing_subscriber::{fmt, EnvFilter};
 
 const OVERLAY_OPENED_EVENT: &str = "winsearch://overlay-opened";
 const OVERLAY_CLOSED_EVENT: &str = "winsearch://overlay-closed";
 const INDEXING_STATUS_EVENT: &str = "winsearch://indexing-status";
-const HOTKEY_CANDIDATES: [&str; 2] = ["Alt+Space", "Ctrl+Shift+Space"];
+const HOTKEY_CANDIDATES: [&str; 3] = ["Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Space"];
 const FILESYSTEM_BASELINE_SOURCE: &str = "filesystem_baseline";
 const FILESYSTEM_BASELINE_VERSION: &str = "1";
 const MAX_FILE_SEARCH_QUERY_CHARS: usize = 256;
 const MAX_FILE_ID_CHARS: usize = 1024;
 const WATCHER_DEBOUNCE_MS: u64 = 1500;
+const STARTUP_SCAN_MAX_FILES: usize = 500;
 
 type IndexingStateHandle = Arc<Mutex<IndexingState>>;
 
@@ -198,6 +206,7 @@ fn collect_default_user_folders(
       "manual_incremental_refresh"
     },
     true,
+    None,
   )
 }
 
@@ -310,6 +319,53 @@ fn open_path_with_system_default(path: &Path) -> Result<(), String> {
     let _ = path;
     Err("Opening files is only supported on Windows builds".to_string())
   }
+}
+
+fn create_system_tray(app: &AppHandle) -> Result<(), String> {
+  let show_item = MenuItem::with_id(app, "tray_show", "Show WinSearch", true, None::<&str>)
+    .map_err(|error| format!("Failed to create tray 'Show' menu item: {error}"))?;
+  let hide_item = MenuItem::with_id(app, "tray_hide", "Hide WinSearch", true, None::<&str>)
+    .map_err(|error| format!("Failed to create tray 'Hide' menu item: {error}"))?;
+  let quit_item = MenuItem::with_id(app, "tray_quit", "Quit WinSearch", true, None::<&str>)
+    .map_err(|error| format!("Failed to create tray 'Quit' menu item: {error}"))?;
+  let separator =
+    PredefinedMenuItem::separator(app).map_err(|error| format!("Failed to create tray separator: {error}"))?;
+
+  let tray_menu = Menu::with_items(app, &[&show_item, &hide_item, &separator, &quit_item])
+    .map_err(|error| format!("Failed to create tray menu: {error}"))?;
+
+  let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+    .tooltip("WinSearch")
+    .menu(&tray_menu)
+    .show_menu_on_left_click(true)
+    .on_menu_event(|app, event| match event.id().as_ref() {
+      "tray_show" => {
+        if let Err(error) = toggle_overlay_visibility(app, true) {
+          tracing::error!(%error, "Tray action failed: show overlay");
+        }
+      }
+      "tray_hide" => {
+        if let Err(error) = hide_overlay(app.clone()) {
+          tracing::error!(%error, "Tray action failed: hide overlay");
+        }
+      }
+      "tray_quit" => {
+        app.exit(0);
+      }
+      _ => {}
+    });
+
+  if let Some(default_icon) = app.default_window_icon().cloned() {
+    tray_builder = tray_builder.icon(default_icon);
+  } else {
+    tracing::warn!("Default window icon is unavailable; tray icon may not render as expected");
+  }
+
+  tray_builder
+    .build(app)
+    .map_err(|error| format!("Failed to create system tray icon: {error}"))?;
+
+  Ok(())
 }
 
 fn toggle_overlay_visibility(app: &AppHandle, force_visible: bool) -> Result<(), String> {
@@ -430,6 +486,7 @@ fn run_filesystem_scan(
   mode: filesystem::CollectionMode,
   reason: &str,
   allow_when_paused: bool,
+  max_files_per_run: Option<usize>,
 ) -> Result<CollectionReport, String> {
   let roots = {
     let mut guard = indexing_state
@@ -460,7 +517,7 @@ fn run_filesystem_scan(
     return Err("No default user folders are available for indexing".to_string());
   }
 
-  let result = filesystem::collect_paths_with_mode(store, &roots, mode);
+  let result = filesystem::collect_paths_with_mode(store, &roots, mode, max_files_per_run);
 
   match result {
     Ok(report) => {
@@ -587,12 +644,53 @@ fn start_filesystem_watcher(app: AppHandle, store: AppIndexStore, indexing_state
         filesystem::CollectionMode::Incremental,
         "watcher_event",
         false,
+        None,
       ) {
+        if error == "Indexing scan is already in progress" {
+          continue;
+        }
         if let Ok(mut guard) = indexing_state.lock() {
           guard.last_error = Some(format!("Watcher-triggered incremental scan failed: {error}"));
         }
         emit_indexing_status(&app, &indexing_state);
       }
+    }
+  });
+}
+
+fn start_initial_indexing_tasks(
+  app: AppHandle,
+  store: AppIndexStore,
+  indexing_state: IndexingStateHandle,
+  startup_mode: filesystem::CollectionMode,
+) {
+  thread::spawn(move || {
+    match start_menu::collect(&store) {
+      Ok(report) => {
+        tracing::info!(
+          source = report.source.as_str(),
+          scanned_entries = report.scanned_entries,
+          indexed_entries = report.indexed_entries,
+          skipped_entries = report.skipped_entries,
+          error_count = report.errors.len(),
+          "Start-menu collector finished initial index pass"
+        );
+      }
+      Err(error) => {
+        tracing::error!(%error, "Start-menu collector failed during initial index pass");
+      }
+    }
+
+    if let Err(error) = run_filesystem_scan(
+      &app,
+      &store,
+      &indexing_state,
+      startup_mode,
+      "startup",
+      false,
+      Some(STARTUP_SCAN_MAX_FILES),
+    ) {
+      tracing::error!(%error, "Filesystem collector failed during startup indexing pass");
     }
   });
 }
@@ -605,6 +703,9 @@ pub fn run() {
     .manage(Arc::new(Mutex::new(IndexingState::default())))
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
     .setup(|app| {
+      create_system_tray(&app.handle())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+
       let index_data_dir = app.path().app_local_data_dir().map_err(|error| {
         std::io::Error::new(
           std::io::ErrorKind::Other,
@@ -639,59 +740,40 @@ pub fn run() {
         "SQLite app index initialized"
       );
 
-      match start_menu::collect(&index_store) {
-        Ok(report) => {
-          tracing::info!(
-            source = report.source.as_str(),
-            scanned_entries = report.scanned_entries,
-            indexed_entries = report.indexed_entries,
-            skipped_entries = report.skipped_entries,
-            error_count = report.errors.len(),
-            "Start-menu collector finished initial index pass"
-          );
-        }
-        Err(error) => {
-          tracing::error!(%error, "Start-menu collector failed during initial index pass");
-        }
-      }
+      let startup_mode = filesystem::CollectionMode::Incremental;
 
-      let startup_mode = {
-        let guard = indexing_state
-          .lock()
-          .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Indexing state lock is poisoned"))?;
-        if guard.baseline_complete {
-          filesystem::CollectionMode::Incremental
-        } else {
-          filesystem::CollectionMode::Full
-        }
-      };
-
-      if let Err(error) = run_filesystem_scan(
-        &app.handle().clone(),
-        &index_store,
-        indexing_state.inner(),
-        startup_mode,
-        "startup",
-        false,
-      ) {
-        tracing::error!(%error, "Filesystem collector failed during startup indexing pass");
-      }
-
-      app.manage(index_store);
-      start_filesystem_watcher(app.handle().clone(), app.state::<AppIndexStore>().inner().clone(), indexing_state.inner().clone());
+      let managed_store = index_store.clone();
+      app.manage(managed_store);
 
       let hotkey_state = app.state::<Mutex<HotkeyState>>();
       let registration_result = register_overlay_hotkey(&app.handle().clone(), &hotkey_state);
 
       if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
-
-        if let Err(error) = registration_result {
-          tracing::error!(%error, "Failed to register global hotkey; showing window for manual access");
+        if cfg!(debug_assertions) {
           let _ = window.show();
           let _ = window.set_focus();
+        } else {
+          let _ = window.hide();
+
+          if let Err(error) = registration_result {
+            tracing::error!(%error, "Failed to register global hotkey; showing window for manual access");
+            let _ = window.show();
+            let _ = window.set_focus();
+          }
         }
       }
+
+      start_filesystem_watcher(
+        app.handle().clone(),
+        index_store.clone(),
+        indexing_state.inner().clone(),
+      );
+      start_initial_indexing_tasks(
+        app.handle().clone(),
+        index_store,
+        indexing_state.inner().clone(),
+        startup_mode,
+      );
 
       Ok(())
     })

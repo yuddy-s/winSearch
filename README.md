@@ -24,15 +24,17 @@ Committed roadmap expansion after V1:
 Default indexing behavior target:
 
 - first-run full scan of user folders
-- incremental scan on app open
+- budgeted incremental scan on app open
 - watcher-driven updates
 - low-impact gaming-friendly defaults (no heavy always-on background scan)
+- includes OneDrive roots automatically when OneDrive is present
 
 Current implementation status for this policy:
 
-- first-run full scan of default user folders is wired
-- app-open incremental scan of default user folders is wired
+- startup uses budgeted incremental scan of default user folders for faster boot
 - watcher-driven updates are wired with debounce
+- manual full refresh performs heavy full-scan catch-up
+- startup indexing tasks run in background so overlay/hotkey can come up faster
 - UI controls include manual full refresh, pause/resume indexing, and indexing status display
 - content search is backed by SQLite FTS5 with name/content/recency ranking
 

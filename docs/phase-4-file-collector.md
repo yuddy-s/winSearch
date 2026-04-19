@@ -18,8 +18,8 @@ This document captures the first file-system collector slice for the file-first 
   - `list_file_index_records`
   - `search_file_index`
 - Added startup indexing policy foundation:
-  - first run: full scan of default user folders
-  - next app starts: incremental scan of default user folders
+  - startup: budgeted incremental scan of default user folders
+  - startup collectors execute in a background task so app shell can become interactive sooner
   - baseline marker persisted via `source_versions` key `filesystem_baseline`
 - Added debounced filesystem watcher startup service:
   - watches default user roots
@@ -33,6 +33,7 @@ This document captures the first file-system collector slice for the file-first 
 - Accepts one or more folder paths and recursively scans files.
 - Supports default user-folder presets:
   - `Desktop`, `Documents`, `Downloads`, `Pictures`, `Music`, `Videos` (when present)
+  - auto-includes OneDrive root and common OneDrive user folders when available
 - Skips common build/noise folders:
   - `.git`, `.idea`, `.vscode`, `node_modules`, `target`, `dist`, `coverage`, `.next`
 - Indexes file metadata:
@@ -41,6 +42,7 @@ This document captures the first file-system collector slice for the file-first 
 - Stores normalized lowercase content and syncs into an SQLite `FTS5` index for faster content matching.
 - Incremental mode skips unchanged files using `size_bytes + modified_at` snapshot checks.
 - Incremental mode prunes deleted files from index by comparing scanned paths against indexed paths under roots.
+- Startup incremental runs use a file-budget cap so heavy catch-up is deferred to manual full refresh.
 
 ## Security Hardening Added
 

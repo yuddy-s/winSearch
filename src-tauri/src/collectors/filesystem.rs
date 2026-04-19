@@ -55,31 +55,69 @@ pub fn default_user_roots() -> Vec<String> {
   let mut roots = Vec::new();
   let mut seen = HashSet::new();
 
-  let user_profile = match env::var("USERPROFILE") {
-    Ok(value) => PathBuf::from(value),
-    Err(_) => return roots,
-  };
+  let user_profile = env::var("USERPROFILE").ok().map(PathBuf::from);
 
-  for relative in ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"] {
-    let absolute = user_profile.join(relative);
-    if !absolute.exists() || !absolute.is_dir() {
-      continue;
+  if let Some(profile_root) = user_profile.as_ref() {
+    for relative in ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"] {
+      let absolute = profile_root.join(relative);
+      push_root_if_dir(&absolute, &mut roots, &mut seen);
     }
+  }
 
-    let value = absolute.to_string_lossy().into_owned();
-    let key = value.to_ascii_lowercase();
-    if seen.insert(key) {
-      roots.push(value);
+  if let Some(one_drive_root) = detect_onedrive_root(user_profile.as_ref()) {
+    push_root_if_dir(&one_drive_root, &mut roots, &mut seen);
+    for relative in ["Desktop", "Documents", "Pictures", "Music", "Videos"] {
+      let absolute = one_drive_root.join(relative);
+      push_root_if_dir(&absolute, &mut roots, &mut seen);
     }
   }
 
   roots
 }
 
+fn detect_onedrive_root(user_profile: Option<&PathBuf>) -> Option<PathBuf> {
+  for env_key in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+    let Some(value) = env::var(env_key).ok() else {
+      continue;
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+      continue;
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    if candidate.exists() && candidate.is_dir() {
+      return Some(candidate);
+    }
+  }
+
+  if let Some(profile_root) = user_profile {
+    let fallback = profile_root.join("OneDrive");
+    if fallback.exists() && fallback.is_dir() {
+      return Some(fallback);
+    }
+  }
+
+  None
+}
+
+fn push_root_if_dir(path: &Path, roots: &mut Vec<String>, seen: &mut HashSet<String>) {
+  if !path.exists() || !path.is_dir() {
+    return;
+  }
+
+  let value = path.to_string_lossy().into_owned();
+  let key = value.to_ascii_lowercase();
+  if seen.insert(key) {
+    roots.push(value);
+  }
+}
+
 pub fn collect_paths_with_mode(
   store: &AppIndexStore,
   roots: &[String],
   mode: CollectionMode,
+  max_files_per_run: Option<usize>,
 ) -> Result<CollectionReport, String> {
   if roots.is_empty() {
     return Err("No folder paths provided for filesystem collection".to_string());
@@ -89,6 +127,7 @@ pub fn collect_paths_with_mode(
   report.mode = Some(mode.as_str().to_string());
   let mut file_paths = Vec::new();
   let mut did_hit_file_cap = false;
+  let effective_max_files_per_run = max_files_per_run.unwrap_or(MAX_INDEX_FILES_PER_RUN).max(1);
 
   for root in roots {
     let normalized_root = root.trim();
@@ -146,7 +185,12 @@ pub fn collect_paths_with_mode(
       continue;
     }
 
-    let limit_reached = collect_files_from_root(&root_path, &mut file_paths, &mut report);
+    let limit_reached = collect_files_from_root(
+      &root_path,
+      &mut file_paths,
+      &mut report,
+      effective_max_files_per_run,
+    );
     if limit_reached {
       did_hit_file_cap = true;
       break;
@@ -257,7 +301,12 @@ fn is_unchanged(snapshot: Option<&FileRecordSnapshot>, size_bytes: i64, modified
   snapshot.size_bytes == size_bytes && snapshot.modified_at == modified_at
 }
 
-fn collect_files_from_root(root: &Path, output: &mut Vec<PathBuf>, report: &mut CollectionReport) -> bool {
+fn collect_files_from_root(
+  root: &Path,
+  output: &mut Vec<PathBuf>,
+  report: &mut CollectionReport,
+  max_files_per_run: usize,
+) -> bool {
   let mut stack = vec![(root.to_path_buf(), 0usize)];
   let mut visited_dirs: HashSet<String> = HashSet::new();
 
@@ -330,13 +379,7 @@ fn collect_files_from_root(root: &Path, output: &mut Vec<PathBuf>, report: &mut 
         continue;
       }
 
-      if output.len() >= MAX_INDEX_FILES_PER_RUN {
-        push_error(
-          report,
-          format!(
-            "Reached max files-per-run limit ({MAX_INDEX_FILES_PER_RUN}); remaining files skipped"
-          ),
-        );
+      if output.len() >= max_files_per_run {
         return true;
       }
 
